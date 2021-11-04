@@ -311,3 +311,138 @@ fn test_payment_failures() {
         "Did not return to approved status."
     );
 }
+
+/// Test payments that fail (reentrantly)
+#[test]
+fn test_failed_payout_reentrancy() {
+    let (root, dao) = setup_dao();
+    let user1 = root.create_user(user(1), to_yocto("1000"));
+    let whale = root.create_user(user(2), to_yocto("1000"));
+
+    // Add user1
+    {
+        add_member_proposal(&root, &dao, user1.account_id.clone()).assert_success();
+        vote(vec![&root], &dao, 0);
+    }
+
+    // sets up a test token
+    let test_token = setup_test_token(&root);
+
+    // Attempt to make the dao transfer a token that it hasn't
+    // received any yet
+    {
+        // transfer of 5 units
+        add_transfer_proposal(&root, &dao, test_token.account_id(), user(1), 5, None)
+            .assert_success();
+
+        // Vote in the transfer
+        vote(vec![&root, &user1], &dao, 1);
+        let mut proposal = view!(dao.get_proposal(1)).unwrap_json::<Proposal>();
+        assert_eq!(proposal.status, ProposalStatus::PayoutFailed);
+    }
+    // then the payment entered a failed state
+
+    // Gives 10 of that token to the dao
+    // and sets up user1 acc on the token
+    {
+        call!(
+            dao.user_account,
+            test_token.mint(to_va(dao.user_account.account_id.clone()), U128(10))
+        )
+        .assert_success();
+        call!(
+            user1,
+            test_token.storage_deposit(Some(to_va(user1.account_id.clone())), Some(true)),
+            deposit = to_yocto("125")
+        )
+        .assert_success();
+    }
+
+    let retry_payment = |proposal_id: u64| {
+        call!(
+            root,
+            dao.act_proposal(
+                proposal_id,
+                Action::RetryPayout,
+                Some("Sorry! We topped up our tokens. Thanks.".to_string())
+            )
+        )
+        .assert_success();
+    };
+
+    // retries the payment (success)
+    {
+        use std::convert::TryInto;
+        // instead of calling act_proposal,
+        // we will call a stateful version of it
+        // (separated in various calls)
+
+        let call1 = call!(
+            root,
+            dao.act_proposal_for_failed_retry_1(
+                1,
+                Action::RetryPayout,
+                Some("Sorry! We topped up our tokens. Thanks.".to_string())
+            )
+        );
+        call1.assert_success();
+        // internally, it called internal_payout_for_failed_retry_1,
+        // which internally called ext_fungible_token::ft_transfer.
+        // normally it would have a .then() and a callback,
+        // but in our case we will make the same call again
+        // (this time using the normal call)
+
+        // let promises = call1.promise_results();
+        // println!("{:#?}", &promises);
+
+        // check user1 balance
+        {
+            let balance = view!(test_token.ft_balance_of(
+                //
+                user1.account_id.clone().try_into().unwrap()
+            ))
+            .unwrap_json::<U64>();
+            assert_eq!(5, balance.0);
+        }
+
+        // normal call (re-entering the function)
+        call!(
+            root,
+            dao.act_proposal(
+                1,
+                Action::RetryPayout,
+                Some("Sorry! We topped up our tokens. Thanks.".to_string())
+            )
+        )
+        .assert_success();
+
+        // check user1 balance
+        {
+            let balance = view!(test_token.ft_balance_of(
+                //
+                user1.account_id.clone().try_into().unwrap()
+            ))
+            .unwrap_json::<U64>();
+            assert_eq!(10, balance.0);
+        }
+        // note that he was able to re-enter the function,
+        // getting the payout twice
+
+        // trying to call the callback (from the first call)
+        // will error because we would need to properly configure
+        // the promise results (as input) of that call
+        // (since it's a callback)
+        //
+        // call!(root, dao.internal_payout_for_failed_retry_2(1)).assert_success();
+
+        // assert that the proposal got into a Approved state
+        let proposal = view!(dao.get_proposal(1)).unwrap_json::<Proposal>();
+        assert_eq!(
+            proposal.status,
+            ProposalStatus::Approved,
+            "Did not return to approved status."
+        );
+
+        // note: we never executed the callback from the first call
+    }
+}

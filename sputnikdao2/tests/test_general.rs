@@ -263,21 +263,13 @@ fn test_payment_failures() {
     .assert_success();
     call!(
         user1,
-        test_token.storage_deposit(Some(to_va(user1.account_id.clone())),Some(true)),
+        test_token.storage_deposit(Some(to_va(user1.account_id.clone())), Some(true)),
         deposit = to_yocto("125")
     )
     .assert_success();
 
     // Attempt to transfer more than it has
-    add_transfer_proposal(
-        &root,
-        &dao,
-        test_token.account_id(),
-        user(1),
-        10,
-        None
-    )
-    .assert_success();
+    add_transfer_proposal(&root, &dao, test_token.account_id(), user(1), 10, None).assert_success();
 
     // Vote in the transfer
     vote(vec![&root, &user1], &dao, 1);
@@ -292,16 +284,30 @@ fn test_payment_failures() {
     .assert_success();
     call!(
         whale,
-        test_token.ft_transfer(to_va(dao.account_id()), U128::from(1000), Some("Heard you're in a pinch, let me help.".to_string())),
+        test_token.ft_transfer(
+            to_va(dao.account_id()),
+            U128::from(1000),
+            Some("Heard you're in a pinch, let me help.".to_string())
+        ),
         deposit = 1
-    ).assert_success();
+    )
+    .assert_success();
 
     // Council member retries payment via an action
     call!(
         root,
-        dao.act_proposal(1, Action::RetryPayout, Some("Sorry! We topped up our tokens. Thanks.".to_string()))
-    ).assert_success();
+        dao.act_proposal(
+            1,
+            Action::RetryPayout,
+            Some("Sorry! We topped up our tokens. Thanks.".to_string())
+        )
+    )
+    .assert_success();
 
     proposal = view!(dao.get_proposal(1)).unwrap_json::<Proposal>();
-    assert_eq!(proposal.status, ProposalStatus::Approved, "Did not return to approved status.");
+    assert_eq!(
+        proposal.status,
+        ProposalStatus::Approved,
+        "Did not return to approved status."
+    );
 }

@@ -358,18 +358,6 @@ fn test_failed_payout_reentrancy() {
         .assert_success();
     }
 
-    let retry_payment = |proposal_id: u64| {
-        call!(
-            root,
-            dao.act_proposal(
-                proposal_id,
-                Action::RetryPayout,
-                Some("Sorry! We topped up our tokens. Thanks.".to_string())
-            )
-        )
-        .assert_success();
-    };
-
     // retries the payment (success)
     {
         use std::convert::TryInto;

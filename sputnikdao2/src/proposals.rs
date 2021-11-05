@@ -237,12 +237,13 @@ impl Contract {
         msg: Option<String>,
     ) -> PromiseOrValue<()> {
         if token_id == BASE_TOKEN {
-            Promise::new(receiver_id.clone()).transfer(amount)
+            Promise::new(receiver_id.clone())
+                .transfer(amount)
                 .then(ext_self::callback_after_payout(
                     proposal_id,
                     &env::current_account_id(),
                     0,
-                    GAS_FOR_FT_TRANSFER
+                    GAS_FOR_FT_TRANSFER,
                 ))
                 .into()
         } else {
@@ -255,11 +256,12 @@ impl Contract {
                     &token_id,
                     ONE_YOCTO_NEAR,
                     GAS_FOR_FT_TRANSFER,
-                ).then(ext_self::callback_after_payout(
+                )
+                .then(ext_self::callback_after_payout(
                     proposal_id,
                     &env::current_account_id(),
                     0,
-                    GAS_FOR_FT_TRANSFER
+                    GAS_FOR_FT_TRANSFER,
                 ))
                 .into()
             } else {
@@ -270,11 +272,12 @@ impl Contract {
                     &token_id,
                     ONE_YOCTO_NEAR,
                     GAS_FOR_FT_TRANSFER,
-                ).then(ext_self::callback_after_payout(
+                )
+                .then(ext_self::callback_after_payout(
                     proposal_id,
                     &env::current_account_id(),
                     0,
-                    GAS_FOR_FT_TRANSFER
+                    GAS_FOR_FT_TRANSFER,
                 ))
                 .into()
             }
@@ -286,10 +289,13 @@ impl Contract {
         &mut self,
         policy: &Policy,
         proposal: &Proposal,
-        proposal_id: u64
+        proposal_id: u64,
     ) -> PromiseOrValue<()> {
         // Return proposal bond unless transferring a payout that might fail and be retried
-        if !matches!(&proposal.kind, ProposalKind::Transfer { .. } | ProposalKind::BountyDone { .. }) {
+        if !matches!(
+            &proposal.kind,
+            ProposalKind::Transfer { .. } | ProposalKind::BountyDone { .. }
+        ) {
             Promise::new(proposal.proposer.clone()).transfer(policy.proposal_bond.0);
         }
 
@@ -370,7 +376,12 @@ impl Contract {
             ProposalKind::BountyDone {
                 bounty_id,
                 receiver_id,
-            } => self.internal_execute_bounty_payout(*bounty_id, &receiver_id.clone().into(), true, proposal_id),
+            } => self.internal_execute_bounty_payout(
+                *bounty_id,
+                &receiver_id.clone().into(),
+                true,
+                proposal_id,
+            ),
             ProposalKind::Vote => PromiseOrValue::Value(()),
         }
     }
@@ -381,7 +392,7 @@ impl Contract {
         policy: &Policy,
         proposal: &Proposal,
         return_bond: bool,
-        proposal_id: u64
+        proposal_id: u64,
     ) -> PromiseOrValue<()> {
         if return_bond {
             // Return bond to the proposer.
@@ -391,9 +402,12 @@ impl Contract {
             ProposalKind::BountyDone {
                 bounty_id,
                 receiver_id,
-            } => {
-                self.internal_execute_bounty_payout(*bounty_id, &receiver_id.clone().into(), false, proposal_id)
-            }
+            } => self.internal_execute_bounty_payout(
+                *bounty_id,
+                &receiver_id.clone().into(),
+                false,
+                proposal_id,
+            ),
             _ => PromiseOrValue::Value(()),
         }
     }
@@ -484,9 +498,11 @@ impl Contract {
                 false
             }
             Action::VoteApprove | Action::VoteReject | Action::VoteRemove => {
-                assert!(matches!(
-                    proposal.status,
-                    ProposalStatus::InProgress | ProposalStatus::PayoutFailed),
+                assert!(
+                    matches!(
+                        proposal.status,
+                        ProposalStatus::InProgress | ProposalStatus::PayoutFailed
+                    ),
                     "ERR_PROPOSAL_NOT_READY_FOR_VOTE"
                 );
                 proposal.update_votes(
@@ -543,7 +559,8 @@ impl Contract {
                         token_id,
                         receiver_id,
                         amount,
-                        msg } => {
+                        msg,
+                    } => {
                         self.internal_payout(
                             &token_id,
                             receiver_id.as_ref(),
@@ -553,7 +570,10 @@ impl Contract {
                             msg.clone(),
                         );
                     }
-                    ProposalKind::BountyDone { bounty_id, receiver_id } => {
+                    ProposalKind::BountyDone {
+                        bounty_id,
+                        receiver_id,
+                    } => {
                         // Get details from bounty
                         self.internal_execute_bounty_payout(
                             *bounty_id,
@@ -562,7 +582,7 @@ impl Contract {
                             id,
                         );
                     }
-                    _ => env::panic(b"ERR_RETRY_PAYOUT_WRONG_KIND")
+                    _ => env::panic(b"ERR_RETRY_PAYOUT_WRONG_KIND"),
                 };
                 false
             }
@@ -573,6 +593,136 @@ impl Contract {
         }
         if let Some(memo) = memo {
             log!("Memo: {}", memo);
+        }
+    }
+}
+
+pub mod extra_changed_functions {
+    use super::*;
+
+    #[near_bindgen]
+    impl Contract {
+        /// Replicates `act_proposal` for `RetryPayout`,
+        /// but the calls have no callback
+        /// //
+        // #[cfg(test)]
+        pub fn act_proposal_for_failed_retry_1(
+            &mut self,
+            id: u64,
+            action: Action,
+            memo: Option<String>,
+        ) -> (Promise, bool) {
+            let mut proposal: Proposal = self.proposals.get(&id).expect("ERR_NO_PROPOSAL").into();
+            let policy = self.policy.get().unwrap().to_policy();
+            // Check permissions for the given action.
+            let (roles, allowed) =
+                policy.can_execute_action(self.internal_user_info(), &proposal.kind, &action);
+            assert!(allowed, "ERR_PERMISSION_DENIED");
+            let sender_id = env::predecessor_account_id();
+
+            // Update proposal given action. Returns true if should be updated in storage.
+            let (first_call, update) = match action {
+                Action::RetryPayout => {
+                    assert_eq!(
+                        proposal.status,
+                        ProposalStatus::PayoutFailed,
+                        "ERR_PROPOSAL_PAYOUT_NOT_FAILED"
+                    );
+
+                    // Note that at this point, the bond has already been paid.
+                    // Call internal payout method for applicable proposal kinds.
+                    let first_call = match &proposal.kind {
+                        ProposalKind::Transfer {
+                            token_id,
+                            receiver_id,
+                            amount,
+                            msg,
+                        } => self.internal_payout_for_failed_retry_1(
+                            &token_id,
+                            receiver_id.as_ref(),
+                            amount.0,
+                            proposal.description.clone(),
+                            id,
+                            msg.clone(),
+                        ),
+                        ProposalKind::BountyDone { .. } => {
+                            env::panic(b"not implemented for bounty failed payouts")
+                        }
+                        _ => env::panic(b"not implemented for non-transfer failed payouts"),
+                    };
+                    (first_call, false)
+                }
+                _ => {
+                    panic!("this testing method should only be used for payment retries");
+                }
+            };
+            (first_call, update)
+        }
+
+        /// Replicates `act_proposal` for `RetryPayout`,
+        /// but the calls have no callback
+        //
+        // #[cfg(test)]
+        pub fn act_proposal_for_failed_retry_2(
+            &mut self,
+            id: u64,
+            action: Action,
+            memo: Option<String>,
+            update: bool,
+        ) {
+            let mut proposal: Proposal = self.proposals.get(&id).expect("ERR_NO_PROPOSAL").into();
+            if update {
+                self.proposals
+                    .insert(&id, &VersionedProposal::Default(proposal));
+            }
+            if let Some(memo) = memo {
+                log!("Memo: {}", memo);
+            }
+        }
+
+        /// Replicates `internal_payout` for `RetryPayout`,
+        /// but the calls have no callback
+        //
+        // #[cfg(test)]
+        pub(crate) fn internal_payout_for_failed_retry_1(
+            &mut self,
+            token_id: &AccountId,
+            receiver_id: &AccountId,
+            amount: Balance,
+            memo: String,
+            proposal_id: u64,
+            msg: Option<String>,
+        ) -> Promise {
+            if token_id == BASE_TOKEN {
+                env::panic(b"not implemented for BASE_TOKEN")
+            } else if let Some(msg) = msg {
+                env::panic(b"not implemented for transfers that had attached message")
+            } else {
+                ext_fungible_token::ft_transfer(
+                    receiver_id.clone(),
+                    U128(amount),
+                    Some(memo),
+                    &token_id,
+                    ONE_YOCTO_NEAR,
+                    GAS_FOR_FT_TRANSFER,
+                )
+            }
+        }
+
+        /// Replicates `internal_payout` for `RetryPayout`
+        ///
+        /// (This is never really called because I don't know how
+        /// to configure a proper "call" "into a callback"
+        /// ie. configure it's expected result promise inputs, etc)
+        //
+        // #[cfg(test)]
+        pub fn internal_payout_for_failed_retry_2(&mut self, proposal_id: u64) -> Promise {
+            ext_self::callback_after_payout(
+                proposal_id,
+                &env::current_account_id(),
+                0,
+                GAS_FOR_FT_TRANSFER,
+            )
         }
     }
 }

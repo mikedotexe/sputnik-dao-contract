@@ -1,7 +1,5 @@
-use std::convert::TryFrom;
-
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::json_types::{WrappedDuration, WrappedTimestamp, U128};
+use near_sdk::json_types::{U128, U64};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{env, near_bindgen, AccountId, Promise, PromiseOrValue};
 
@@ -14,9 +12,9 @@ pub struct BountyClaim {
     /// Bounty id that was claimed.
     bounty_id: u64,
     /// Start time of the claim.
-    start_time: WrappedTimestamp,
+    start_time: U64,
     /// Deadline specified by claimer.
-    deadline: WrappedDuration,
+    deadline: U64,
     /// Completed?
     completed: bool,
 }
@@ -29,13 +27,13 @@ pub struct Bounty {
     /// Description of the bounty.
     pub description: String,
     /// Token the bounty will be paid out.
-    pub token: AccountId,
+    pub token: Option<AccountId>,
     /// Amount to be paid out.
     pub amount: U128,
     /// How many times this bounty can be done.
     pub times: u32,
     /// Max deadline from claim that can be spend on this bounty.
-    pub max_deadline: WrappedDuration,
+    pub max_deadline: U64,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
@@ -110,7 +108,7 @@ impl Contract {
     /// Bond must be attached to the claim.
     /// Fails if already claimed `times` times.
     #[payable]
-    pub fn bounty_claim(&mut self, id: u64, deadline: WrappedDuration) {
+    pub fn bounty_claim(&mut self, id: u64, deadline: U64) {
         let bounty: Bounty = self.bounties.get(&id).expect("ERR_NO_BOUNTY").into();
         let policy = self.policy.get().unwrap().to_policy();
         assert_eq!(
@@ -131,7 +129,7 @@ impl Contract {
             .unwrap_or_default();
         claims.push(BountyClaim {
             bounty_id: id,
-            start_time: WrappedTimestamp::from(env::block_timestamp()),
+            start_time: U64::from(env::block_timestamp()),
             deadline,
             completed: false,
         });
@@ -185,7 +183,7 @@ impl Contract {
                 description,
                 kind: ProposalKind::BountyDone {
                     bounty_id: id,
-                    receiver_id: ValidAccountId::try_from(sender_id.clone()).unwrap(),
+                    receiver_id: sender_id.clone(),
                 },
             });
             claims[claim_idx].completed = true;
@@ -216,11 +214,10 @@ impl Contract {
 #[cfg(test)]
 mod tests {
     use near_sdk::test_utils::{accounts, VMContextBuilder};
-    use near_sdk::{testing_env, MockedBlockchain};
+    use near_sdk::testing_env;
     use near_sdk_sim::to_yocto;
 
     use crate::proposals::{ProposalInput, ProposalKind};
-    use crate::types::BASE_TOKEN;
     use crate::{Action, Config};
 
     use super::*;
@@ -232,10 +229,10 @@ mod tests {
             kind: ProposalKind::AddBounty {
                 bounty: Bounty {
                     description: "test bounty".to_string(),
-                    token: BASE_TOKEN.to_string(),
+                    token: None,
                     amount: U128(to_yocto("10")),
                     times,
-                    max_deadline: WrappedDuration::from(1_000),
+                    max_deadline: U64::from(1_000),
                 },
             },
         });
@@ -258,7 +255,7 @@ mod tests {
         assert_eq!(contract.get_last_bounty_id(), 1);
         assert_eq!(contract.get_bounty(0).bounty.times, 2);
 
-        contract.bounty_claim(0, WrappedDuration::from(500));
+        contract.bounty_claim(0, U64::from(500));
         assert_eq!(contract.get_bounty_claims(accounts(1)).len(), 1);
         assert_eq!(contract.get_bounty_number_of_claims(0), 1);
 
@@ -266,7 +263,7 @@ mod tests {
         assert_eq!(contract.get_bounty_claims(accounts(1)).len(), 0);
         assert_eq!(contract.get_bounty_number_of_claims(0), 0);
 
-        contract.bounty_claim(0, WrappedDuration::from(500));
+        contract.bounty_claim(0, U64::from(500));
         assert_eq!(contract.get_bounty_claims(accounts(1)).len(), 1);
         assert_eq!(contract.get_bounty_number_of_claims(0), 1);
 
@@ -284,7 +281,7 @@ mod tests {
         assert_eq!(contract.get_bounty_claims(accounts(1)).len(), 0);
         assert_eq!(contract.get_bounty(0).bounty.times, 1);
 
-        contract.bounty_claim(0, WrappedDuration::from(500));
+        contract.bounty_claim(0, U64::from(500));
         contract.bounty_done(0, None, "Bounty is done 2".to_string());
         contract.act_proposal(2, Action::VoteApprove, None);
 
@@ -301,8 +298,8 @@ mod tests {
             VersionedPolicy::Default(vec![accounts(1).into()]),
         );
         let id = add_bounty(&mut context, &mut contract, 1);
-        contract.bounty_claim(id, WrappedDuration::from(500));
+        contract.bounty_claim(id, U64::from(500));
         contract.bounty_done(id, None, "Bounty is done 2".to_string());
-        contract.bounty_claim(id, WrappedDuration::from(500));
+        contract.bounty_claim(id, U64::from(500));
     }
 }

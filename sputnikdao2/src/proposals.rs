@@ -383,10 +383,9 @@ impl Contract {
         // 0. validate bond attached.
         // TODO: consider bond in the token of this DAO.
         let policy = self.policy.get().unwrap().to_policy();
-        assert!(
-            env::attached_deposit() >= policy.proposal_bond.0,
-            "ERR_MIN_BOND"
-        );
+        if env::attached_deposit() < policy.proposal_bond.0 {
+            env::panic_str("ERR_MIN_BOND")
+        }
 
         // 1. Validate proposal.
         match &proposal.kind {

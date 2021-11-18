@@ -14,6 +14,7 @@ pub struct ProposalOutput {
 
 /// This is format of output via JSON for the bounty.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug, PartialEq))]
 #[serde(crate = "near_sdk::serde")]
 pub struct BountyOutput {
     /// Id of the bounty.
@@ -83,7 +84,10 @@ impl Contract {
 
     /// Get specific proposal.
     pub fn get_proposal(&self, id: u64) -> ProposalOutput {
-        let proposal = self.proposals.get(&id).expect("ERR_NO_PROPOSAL");
+        let proposal = self
+            .proposals
+            .get(&id)
+            .unwrap_or_else(|| env::panic_str("ERR_NO_PROPOSAL"));
         ProposalOutput {
             id,
             proposal: proposal.into(),
@@ -92,7 +96,10 @@ impl Contract {
 
     /// Get given bounty by id.
     pub fn get_bounty(&self, id: u64) -> BountyOutput {
-        let bounty = self.bounties.get(&id).expect("ERR_NO_BOUNTY");
+        let bounty = self
+            .bounties
+            .get(&id)
+            .unwrap_or_else(|| env::panic_str("ERR_NO_BOUNTY"));
         BountyOutput {
             id,
             bounty: bounty.into(),

@@ -6,7 +6,8 @@ use near_sdk::{
     env, near_bindgen, AccountId, Balance, BorshStorageKey, CryptoHash, PanicOnDefault, Promise,
 };
 
-use crate::bounties::{Bounty, BountyClaim, VersionedBounty};
+use crate::bounties::VersionedBounty;
+pub use crate::bounties::{Bounty, BountyClaim};
 pub use crate::policy::{Policy, RoleKind, RolePermission, VersionedPolicy, VotePolicy};
 use crate::proposals::VersionedProposal;
 pub use crate::proposals::{Proposal, ProposalInput, ProposalKind, ProposalStatus};

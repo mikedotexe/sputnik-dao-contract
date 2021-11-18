@@ -1,3 +1,5 @@
+#![allow(clippy::ref_in_deref)]
+
 use std::collections::HashMap;
 
 use near_sdk::json_types::U128;
@@ -101,13 +103,9 @@ fn test_create_dao_and_use_token() {
     assert_eq!(
         policy.roles[1].kind,
         RoleKind::Group(
-            vec![
-                root.account_id.clone(),
-                user2.account_id.clone(),
-                user3.account_id.clone()
-            ]
-            .into_iter()
-            .collect()
+            vec![root.account_id(), user2.account_id(), user3.account_id()]
+                .into_iter()
+                .collect()
         )
     );
     add_proposal(
@@ -218,7 +216,7 @@ fn test_create_dao_and_use_token() {
         to_yocto("4")
     );
     assert_eq!(
-        view!(dao.delegation_balance_of(user2_id.clone()))
+        view!(dao.delegation_balance_of(user2_id))
             .unwrap_json::<U128>()
             .0,
         to_yocto("4")

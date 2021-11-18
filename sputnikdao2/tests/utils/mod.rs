@@ -4,6 +4,7 @@ use near_sdk::{AccountId, Balance};
 use near_sdk_sim::transaction::ExecutionStatus;
 use near_sdk_sim::{
     call, deploy, init_simulator, to_yocto, ContractAccount, ExecutionResult, UserAccount,
+    ViewResult,
 };
 
 use near_sdk::json_types::U128;
@@ -30,6 +31,28 @@ pub fn should_fail(r: ExecutionResult) {
         ExecutionStatus::Failure(_) => {}
         _ => panic!("Should fail"),
     }
+}
+
+pub fn should_fail_with(r: ExecutionResult, action: u32, err: &str) {
+    let err = format!("Action #{}: Smart contract panicked: {}", action, err);
+    match r.status() {
+        ExecutionStatus::Failure(txerr_) => {
+            assert_eq!(txerr_.to_string(), err)
+        }
+        ExecutionStatus::Unknown => panic!("Got Unknown. Should have failed with {}", err),
+        ExecutionStatus::SuccessValue(_v) => {
+            panic!("Got SuccessValue. Should have failed with {}", err)
+        }
+        ExecutionStatus::SuccessReceiptId(_id) => {
+            panic!("Got SuccessReceiptId. Should have failed with {}", err)
+        }
+    }
+}
+
+pub fn view_should_fail_with(r: ViewResult, err: &str) {
+    let txerr = r.unwrap_err().to_string();
+    let err = format!("wasm execution failed with error: FunctionCallError(HostError(GuestPanic {{ panic_msg: \"{}\" }}))", err);
+    assert_eq!(txerr, err);
 }
 
 pub fn setup_dao() -> (UserAccount, Contract) {
@@ -91,7 +114,7 @@ pub fn add_member_proposal(
         ProposalInput {
             description: "test".to_string(),
             kind: ProposalKind::AddMemberToRole {
-                member_id: member_id,
+                member_id,
                 role: "council".to_string(),
             },
         },

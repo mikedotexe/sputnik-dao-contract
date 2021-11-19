@@ -1,7 +1,5 @@
-use std::convert::TryFrom;
-
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::json_types::{WrappedDuration, WrappedTimestamp, U128};
+use near_sdk::json_types::{U128, U64};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{env, near_bindgen, AccountId, Promise, PromiseOrValue};
 
@@ -9,33 +7,34 @@ use crate::*;
 
 /// Information recorded about claim of the bounty by given user.
 #[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug, PartialEq))]
 #[serde(crate = "near_sdk::serde")]
 pub struct BountyClaim {
     /// Bounty id that was claimed.
     bounty_id: u64,
     /// Start time of the claim.
-    start_time: WrappedTimestamp,
+    start_time: U64,
     /// Deadline specified by claimer.
-    deadline: WrappedDuration,
+    deadline: U64,
     /// Completed?
     completed: bool,
 }
 
 /// Bounty information.
 #[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone)]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug, PartialEq))]
 #[serde(crate = "near_sdk::serde")]
 pub struct Bounty {
     /// Description of the bounty.
     pub description: String,
     /// Token the bounty will be paid out.
-    pub token: AccountId,
+    pub token: Option<AccountId>,
     /// Amount to be paid out.
     pub amount: U128,
     /// How many times this bounty can be done.
     pub times: u32,
     /// Max deadline from claim that can be spend on this bounty.
-    pub max_deadline: WrappedDuration,
+    pub max_deadline: U64,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
@@ -71,9 +70,13 @@ impl Contract {
         receiver_id: &AccountId,
         success: bool,
     ) -> PromiseOrValue<()> {
-        let mut bounty: Bounty = self.bounties.get(&id).expect("ERR_NO_BOUNTY").into();
-        let (claims, claim_idx) = self.internal_get_claims(id, &receiver_id);
-        self.internal_remove_claim(id, claims, claim_idx);
+        let mut bounty: Bounty = self
+            .bounties
+            .get(&id)
+            .unwrap_or_else(|| env::panic_str("ERR_NO_BOUNTY"))
+            .into();
+        let (claims, claim_idx) = self.internal_get_claims(id, receiver_id);
+        self.internal_remove_claim(id, receiver_id, claims, claim_idx);
         if success {
             let res = self.internal_payout(
                 &bounty.token,
@@ -82,7 +85,7 @@ impl Contract {
                 format!("Bounty {} payout", id),
                 None,
             );
-            if bounty.times == 0 {
+            if bounty.times <= 1 {
                 self.bounties.remove(&id);
             } else {
                 bounty.times -= 1;
@@ -94,13 +97,41 @@ impl Contract {
         }
     }
 
-    fn internal_find_claim(&self, bounty_id: u64, claims: &[BountyClaim]) -> Option<usize> {
-        for i in 0..claims.len() {
-            if claims[i].bounty_id == bounty_id {
+    fn internal_find_claim_filter<F>(
+        &self,
+        bounty_id: u64,
+        claims: &[BountyClaim],
+        filter: F,
+    ) -> Option<usize>
+    where
+        F: Fn(&BountyClaim) -> bool,
+    {
+        for (i, claim) in claims.iter().enumerate() {
+            if claim.bounty_id == bounty_id && filter(claim) {
                 return Some(i);
             }
         }
         None
+    }
+
+    fn internal_get_claims_filter<F>(
+        &mut self,
+        id: u64,
+        sender_id: &AccountId,
+        filter: F,
+    ) -> (Vec<BountyClaim>, usize)
+    where
+        F: Fn(&BountyClaim) -> bool,
+    {
+        let claims = self
+            .bounty_claimers
+            .get(sender_id)
+            .unwrap_or_else(|| env::panic_str("ERR_NO_BOUNTY_CLAIMS"));
+
+        let claim_idx = self
+            .internal_find_claim_filter(id, &claims, filter)
+            .unwrap_or_else(|| env::panic_str("ERR_NO_BOUNTY_CLAIM"));
+        (claims, claim_idx)
     }
 }
 
@@ -110,20 +141,23 @@ impl Contract {
     /// Bond must be attached to the claim.
     /// Fails if already claimed `times` times.
     #[payable]
-    pub fn bounty_claim(&mut self, id: u64, deadline: WrappedDuration) {
-        let bounty: Bounty = self.bounties.get(&id).expect("ERR_NO_BOUNTY").into();
+    pub fn bounty_claim(&mut self, id: u64, deadline: U64) {
+        let bounty: Bounty = self
+            .bounties
+            .get(&id)
+            .unwrap_or_else(|| env::panic_str("ERR_NO_BOUNTY"))
+            .into();
         let policy = self.policy.get().unwrap().to_policy();
-        assert_eq!(
-            env::attached_deposit(),
-            policy.bounty_bond.0,
-            "ERR_BOUNTY_WRONG_BOND"
-        );
+        if env::attached_deposit() != policy.bounty_bond.0 {
+            env::panic_str("ERR_BOUNTY_WRONG_BOND")
+        }
         let claims_count = self.bounty_claims_count.get(&id).unwrap_or_default();
-        assert!(claims_count < bounty.times, "ERR_BOUNTY_ALL_CLAIMED");
-        assert!(
-            deadline.0 <= bounty.max_deadline.0,
-            "ERR_BOUNTY_WRONG_DEADLINE"
-        );
+        if claims_count >= bounty.times {
+            env::panic_str("ERR_BOUNTY_ALL_CLAIMED")
+        }
+        if deadline.0 > bounty.max_deadline.0 {
+            env::panic_str("ERR_BOUNTY_WRONG_DEADLINE")
+        }
         self.bounty_claims_count.insert(&id, &(claims_count + 1));
         let mut claims = self
             .bounty_claimers
@@ -131,7 +165,7 @@ impl Contract {
             .unwrap_or_default();
         claims.push(BountyClaim {
             bounty_id: id,
-            start_time: WrappedTimestamp::from(env::block_timestamp()),
+            start_time: U64::from(env::block_timestamp()),
             deadline,
             completed: false,
         });
@@ -140,56 +174,63 @@ impl Contract {
     }
 
     /// Removes given claims from this bounty and user's claims.
-    fn internal_remove_claim(&mut self, id: u64, mut claims: Vec<BountyClaim>, claim_idx: usize) {
+    fn internal_remove_claim(
+        &mut self,
+        id: u64,
+        receiver_id: &AccountId,
+        mut claims: Vec<BountyClaim>,
+        claim_idx: usize,
+    ) {
         claims.remove(claim_idx);
-        if claims.len() == 0 {
-            self.bounty_claimers.remove(&env::predecessor_account_id());
+        if claims.is_empty() {
+            self.bounty_claimers.remove(&receiver_id);
         } else {
-            self.bounty_claimers
-                .insert(&env::predecessor_account_id(), &claims);
+            self.bounty_claimers.insert(&receiver_id, &claims);
         }
         let count = self.bounty_claims_count.get(&id).unwrap() - 1;
         self.bounty_claims_count.insert(&id, &count);
     }
 
     fn internal_get_claims(&mut self, id: u64, sender_id: &AccountId) -> (Vec<BountyClaim>, usize) {
-        let claims = self
-            .bounty_claimers
-            .get(&sender_id)
-            .expect("ERR_NO_BOUNTY_CLAIMS");
-        let claim_idx = self
-            .internal_find_claim(id, &claims)
-            .expect("ERR_NO_BOUNTY_CLAIM");
-        (claims, claim_idx)
+        self.internal_get_claims_filter(id, sender_id, |_| true)
     }
 
     /// Report that bounty is done. Creates a proposal to vote for paying out the bounty.
     /// Only creator of the claim can call `done` on bounty that is still in progress.
     /// On expired, anyone can call it to free up the claim slot.
     #[payable]
-    pub fn bounty_done(&mut self, id: u64, account_id: Option<AccountId>, description: String) {
-        let sender_id = account_id.unwrap_or_else(|| env::predecessor_account_id());
-        let (mut claims, claim_idx) = self.internal_get_claims(id, &sender_id);
-        assert!(!claims[claim_idx].completed, "ERR_BOUNTY_CLAIM_COMPLETED");
+    pub fn bounty_done(
+        &mut self,
+        id: u64,
+        account_id: Option<AccountId>,
+        description: String,
+    ) -> Option<u64> {
+        let sender_id = account_id.unwrap_or_else(env::predecessor_account_id);
+        let (mut claims, claim_idx) = self.internal_get_claims_filter(
+            //
+            id,
+            &sender_id,
+            |claim| !claim.completed,
+        );
         if env::block_timestamp() > claims[claim_idx].start_time.0 + claims[claim_idx].deadline.0 {
             // Expired. Nothing to do.
-            self.internal_remove_claim(id, claims, claim_idx);
+            self.internal_remove_claim(id, &sender_id, claims, claim_idx);
+            None
         } else {
             // Still under deadline. Only the user themself can call this.
-            assert_eq!(
-                sender_id,
-                env::predecessor_account_id(),
-                "ERR_BOUNTY_DONE_MUST_BE_SELF"
-            );
-            self.add_proposal(ProposalInput {
+            if sender_id != env::predecessor_account_id() {
+                env::panic_str("ERR_BOUNTY_DONE_MUST_BE_SELF")
+            }
+            let proposal_id = self.add_proposal(ProposalInput {
                 description,
                 kind: ProposalKind::BountyDone {
                     bounty_id: id,
-                    receiver_id: ValidAccountId::try_from(sender_id.clone()).unwrap(),
+                    receiver_id: sender_id.clone(),
                 },
             });
             claims[claim_idx].completed = true;
             self.bounty_claimers.insert(&sender_id, &claims);
+            Some(proposal_id)
         }
     }
 
@@ -208,7 +249,7 @@ impl Contract {
                 .transfer(policy.bounty_bond.0)
                 .into()
         };
-        self.internal_remove_claim(id, claims, claim_idx);
+        self.internal_remove_claim(id, &env::predecessor_account_id(), claims, claim_idx);
         result
     }
 }
@@ -216,11 +257,10 @@ impl Contract {
 #[cfg(test)]
 mod tests {
     use near_sdk::test_utils::{accounts, VMContextBuilder};
-    use near_sdk::{testing_env, MockedBlockchain};
+    use near_sdk::testing_env;
     use near_sdk_sim::to_yocto;
 
     use crate::proposals::{ProposalInput, ProposalKind};
-    use crate::types::BASE_TOKEN;
     use crate::{Action, Config};
 
     use super::*;
@@ -232,10 +272,10 @@ mod tests {
             kind: ProposalKind::AddBounty {
                 bounty: Bounty {
                     description: "test bounty".to_string(),
-                    token: BASE_TOKEN.to_string(),
+                    token: None,
                     amount: U128(to_yocto("10")),
                     times,
-                    max_deadline: WrappedDuration::from(1_000),
+                    max_deadline: U64::from(1_000),
                 },
             },
         });
@@ -258,7 +298,7 @@ mod tests {
         assert_eq!(contract.get_last_bounty_id(), 1);
         assert_eq!(contract.get_bounty(0).bounty.times, 2);
 
-        contract.bounty_claim(0, WrappedDuration::from(500));
+        contract.bounty_claim(0, U64::from(500));
         assert_eq!(contract.get_bounty_claims(accounts(1)).len(), 1);
         assert_eq!(contract.get_bounty_number_of_claims(0), 1);
 
@@ -266,7 +306,7 @@ mod tests {
         assert_eq!(contract.get_bounty_claims(accounts(1)).len(), 0);
         assert_eq!(contract.get_bounty_number_of_claims(0), 0);
 
-        contract.bounty_claim(0, WrappedDuration::from(500));
+        contract.bounty_claim(0, U64::from(500));
         assert_eq!(contract.get_bounty_claims(accounts(1)).len(), 1);
         assert_eq!(contract.get_bounty_number_of_claims(0), 1);
 
@@ -284,11 +324,21 @@ mod tests {
         assert_eq!(contract.get_bounty_claims(accounts(1)).len(), 0);
         assert_eq!(contract.get_bounty(0).bounty.times, 1);
 
-        contract.bounty_claim(0, WrappedDuration::from(500));
+        contract.bounty_claim(0, U64::from(500));
         contract.bounty_done(0, None, "Bounty is done 2".to_string());
         contract.act_proposal(2, Action::VoteApprove, None);
 
-        assert_eq!(contract.get_bounty(0).bounty.times, 0);
+        let panic_err = std::panic::catch_unwind(
+            //
+            || contract.get_bounty(0),
+        )
+        .unwrap_err()
+        .downcast::<String>()
+        .unwrap();
+        let expected = |err| {
+            format!("called `Result::unwrap()` on an `Err` value: HostError(GuestPanic {{ panic_msg: \"{}\" }})", err)
+        };
+        assert_eq!(panic_err.as_ref(), expected("ERR_NO_BOUNTY").as_str());
     }
 
     #[test]
@@ -301,8 +351,8 @@ mod tests {
             VersionedPolicy::Default(vec![accounts(1).into()]),
         );
         let id = add_bounty(&mut context, &mut contract, 1);
-        contract.bounty_claim(id, WrappedDuration::from(500));
+        contract.bounty_claim(id, U64::from(500));
         contract.bounty_done(id, None, "Bounty is done 2".to_string());
-        contract.bounty_claim(id, WrappedDuration::from(500));
+        contract.bounty_claim(id, U64::from(500));
     }
 }

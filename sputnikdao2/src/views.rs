@@ -14,6 +14,7 @@ pub struct ProposalOutput {
 
 /// This is format of output via JSON for the bounty.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug, PartialEq))]
 #[serde(crate = "near_sdk::serde")]
 pub struct BountyOutput {
     /// Id of the bounty.
@@ -40,8 +41,8 @@ impl Contract {
     }
 
     /// Returns staking contract if available. Otherwise returns empty.
-    pub fn get_staking_contract(&self) -> AccountId {
-        self.staking_id.clone().unwrap_or_default()
+    pub fn get_staking_contract(self) -> Option<AccountId> {
+        self.staking_id
     }
 
     /// Returns if blob with given hash is stored.
@@ -60,12 +61,8 @@ impl Contract {
     }
 
     /// Returns delegated stake to given account.
-    pub fn delegation_balance_of(&self, account_id: ValidAccountId) -> U128 {
-        U128(
-            self.delegations
-                .get(account_id.as_ref())
-                .unwrap_or_default(),
-        )
+    pub fn delegation_balance_of(&self, account_id: AccountId) -> U128 {
+        U128(self.delegations.get(&account_id).unwrap_or_default())
     }
 
     /// Last proposal's id.
@@ -87,7 +84,10 @@ impl Contract {
 
     /// Get specific proposal.
     pub fn get_proposal(&self, id: u64) -> ProposalOutput {
-        let proposal = self.proposals.get(&id).expect("ERR_NO_PROPOSAL");
+        let proposal = self
+            .proposals
+            .get(&id)
+            .unwrap_or_else(|| env::panic_str("ERR_NO_PROPOSAL"));
         ProposalOutput {
             id,
             proposal: proposal.into(),
@@ -96,7 +96,10 @@ impl Contract {
 
     /// Get given bounty by id.
     pub fn get_bounty(&self, id: u64) -> BountyOutput {
-        let bounty = self.bounties.get(&id).expect("ERR_NO_BOUNTY");
+        let bounty = self
+            .bounties
+            .get(&id)
+            .unwrap_or_else(|| env::panic_str("ERR_NO_BOUNTY"));
         BountyOutput {
             id,
             bounty: bounty.into(),
@@ -121,10 +124,8 @@ impl Contract {
     }
 
     /// Get bounty claims for given user.
-    pub fn get_bounty_claims(&self, account_id: ValidAccountId) -> Vec<BountyClaim> {
-        self.bounty_claimers
-            .get(account_id.as_ref())
-            .unwrap_or_default()
+    pub fn get_bounty_claims(&self, account_id: AccountId) -> Vec<BountyClaim> {
+        self.bounty_claimers.get(&account_id).unwrap_or_default()
     }
 
     /// Returns number of claims per given bounty.

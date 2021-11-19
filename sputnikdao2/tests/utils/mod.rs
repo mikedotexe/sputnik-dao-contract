@@ -1,18 +1,16 @@
 #![allow(dead_code)]
-use std::convert::TryFrom;
-
-pub use near_sdk::json_types::{Base64VecU8, ValidAccountId, WrappedDuration, U64};
+pub use near_sdk::json_types::{Base64VecU8, U64};
 use near_sdk::{AccountId, Balance};
 use near_sdk_sim::transaction::ExecutionStatus;
 use near_sdk_sim::{
     call, deploy, init_simulator, to_yocto, ContractAccount, ExecutionResult, UserAccount,
+    ViewResult,
 };
 
 use near_sdk::json_types::U128;
 use sputnik_staking::ContractContract as StakingContract;
-use sputnikdao2::{
-    Action, Config, ContractContract as DAOContract, ProposalInput, ProposalKind, VersionedPolicy,
-};
+pub use sputnikdao2::ContractContract as DAOContract;
+use sputnikdao2::{Action, Config, ProposalInput, ProposalKind, VersionedPolicy};
 use test_token::ContractContract as TestTokenContract;
 
 near_sdk_sim::lazy_static_include::lazy_static_include_bytes! {
@@ -21,10 +19,10 @@ near_sdk_sim::lazy_static_include::lazy_static_include_bytes! {
     STAKING_WASM_BYTES => "../sputnik-staking/res/sputnik_staking.wasm",
 }
 
-type Contract = ContractAccount<DAOContract>;
+pub type Contract = ContractAccount<DAOContract>;
 
-pub fn base_token() -> String {
-    "".to_string()
+pub fn base_token() -> Option<AccountId> {
+    None
 }
 
 pub fn should_fail(r: ExecutionResult) {
@@ -32,6 +30,28 @@ pub fn should_fail(r: ExecutionResult) {
         ExecutionStatus::Failure(_) => {}
         _ => panic!("Should fail"),
     }
+}
+
+pub fn should_fail_with(r: ExecutionResult, action: u32, err: &str) {
+    let err = format!("Action #{}: Smart contract panicked: {}", action, err);
+    match r.status() {
+        ExecutionStatus::Failure(txerr_) => {
+            assert_eq!(txerr_.to_string(), err)
+        }
+        ExecutionStatus::Unknown => panic!("Got Unknown. Should have failed with {}", err),
+        ExecutionStatus::SuccessValue(_v) => {
+            panic!("Got SuccessValue. Should have failed with {}", err)
+        }
+        ExecutionStatus::SuccessReceiptId(_id) => {
+            panic!("Got SuccessReceiptId. Should have failed with {}", err)
+        }
+    }
+}
+
+pub fn view_should_fail_with(r: ViewResult, err: &str) {
+    let txerr = r.unwrap_err().to_string();
+    let err = format!("wasm execution failed with error: FunctionCallError(HostError(GuestPanic {{ panic_msg: \"{}\" }}))", err);
+    assert_eq!(txerr, err);
 }
 
 pub fn setup_dao() -> (UserAccount, Contract) {
@@ -70,7 +90,7 @@ pub fn setup_staking(root: &UserAccount) -> ContractAccount<StakingContract> {
         bytes: &STAKING_WASM_BYTES,
         signer_account: root,
         deposit: to_yocto("100"),
-        init_method: new(to_va("dao".to_string()), to_va("test_token".to_string()), U64(100_000_000_000))
+        init_method: new("dao".parse().unwrap(), "test_token".parse::<AccountId>().unwrap(), U64(100_000_000_000))
     )
 }
 
@@ -93,7 +113,7 @@ pub fn add_member_proposal(
         ProposalInput {
             description: "test".to_string(),
             kind: ProposalKind::AddMemberToRole {
-                member_id: to_va(member_id),
+                member_id,
                 role: "council".to_string(),
             },
         },
@@ -103,7 +123,7 @@ pub fn add_member_proposal(
 pub fn add_transfer_proposal(
     root: &UserAccount,
     dao: &Contract,
-    token_id: AccountId,
+    token_id: Option<AccountId>,
     receiver_id: AccountId,
     amount: Balance,
     msg: Option<String>,
@@ -115,7 +135,7 @@ pub fn add_transfer_proposal(
             description: "test".to_string(),
             kind: ProposalKind::Transfer {
                 token_id,
-                receiver_id: to_va(receiver_id),
+                receiver_id,
                 amount: U128(amount),
                 msg,
             },
@@ -133,6 +153,6 @@ pub fn vote(users: Vec<&UserAccount>, dao: &Contract, proposal_id: u64) {
     }
 }
 
-pub fn to_va(a: AccountId) -> ValidAccountId {
-    ValidAccountId::try_from(a).unwrap()
+pub fn user(id: u32) -> AccountId {
+    format!("user{}", id).parse().unwrap()
 }

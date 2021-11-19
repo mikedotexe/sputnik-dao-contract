@@ -9,9 +9,8 @@ use near_sdk_sim::{
 
 use near_sdk::json_types::U128;
 use sputnik_staking::ContractContract as StakingContract;
-use sputnikdao2::{
-    Action, Config, ContractContract as DAOContract, ProposalInput, ProposalKind, VersionedPolicy,
-};
+pub use sputnikdao2::ContractContract as DAOContract;
+use sputnikdao2::{Action, Config, ProposalInput, ProposalKind, VersionedPolicy};
 use test_token::ContractContract as TestTokenContract;
 
 near_sdk_sim::lazy_static_include::lazy_static_include_bytes! {
@@ -20,7 +19,7 @@ near_sdk_sim::lazy_static_include::lazy_static_include_bytes! {
     STAKING_WASM_BYTES => "../sputnik-staking/res/sputnik_staking.wasm",
 }
 
-type Contract = ContractAccount<DAOContract>;
+pub type Contract = ContractAccount<DAOContract>;
 
 pub fn base_token() -> Option<AccountId> {
     None
@@ -152,4 +151,8 @@ pub fn vote(users: Vec<&UserAccount>, dao: &Contract, proposal_id: u64) {
         )
         .assert_success();
     }
+}
+
+pub fn user(id: u32) -> AccountId {
+    format!("user{}", id).parse().unwrap()
 }

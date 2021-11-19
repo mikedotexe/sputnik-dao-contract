@@ -76,7 +76,7 @@ impl Contract {
             .unwrap_or_else(|| env::panic_str("ERR_NO_BOUNTY"))
             .into();
         let (claims, claim_idx) = self.internal_get_claims(id, receiver_id);
-        self.internal_remove_claim(id, claims, claim_idx);
+        self.internal_remove_claim(id, receiver_id, claims, claim_idx);
         if success {
             let res = self.internal_payout(
                 &bounty.token,
@@ -174,13 +174,18 @@ impl Contract {
     }
 
     /// Removes given claims from this bounty and user's claims.
-    fn internal_remove_claim(&mut self, id: u64, mut claims: Vec<BountyClaim>, claim_idx: usize) {
+    fn internal_remove_claim(
+        &mut self,
+        id: u64,
+        receiver_id: &AccountId,
+        mut claims: Vec<BountyClaim>,
+        claim_idx: usize,
+    ) {
         claims.remove(claim_idx);
         if claims.is_empty() {
-            self.bounty_claimers.remove(&env::predecessor_account_id());
+            self.bounty_claimers.remove(&receiver_id);
         } else {
-            self.bounty_claimers
-                .insert(&env::predecessor_account_id(), &claims);
+            self.bounty_claimers.insert(&receiver_id, &claims);
         }
         let count = self.bounty_claims_count.get(&id).unwrap() - 1;
         self.bounty_claims_count.insert(&id, &count);
@@ -209,7 +214,7 @@ impl Contract {
         );
         if env::block_timestamp() > claims[claim_idx].start_time.0 + claims[claim_idx].deadline.0 {
             // Expired. Nothing to do.
-            self.internal_remove_claim(id, claims, claim_idx);
+            self.internal_remove_claim(id, &sender_id, claims, claim_idx);
             None
         } else {
             // Still under deadline. Only the user themself can call this.
@@ -244,7 +249,7 @@ impl Contract {
                 .transfer(policy.bounty_bond.0)
                 .into()
         };
-        self.internal_remove_claim(id, claims, claim_idx);
+        self.internal_remove_claim(id, &env::predecessor_account_id(), claims, claim_idx);
         result
     }
 }
@@ -323,7 +328,17 @@ mod tests {
         contract.bounty_done(0, None, "Bounty is done 2".to_string());
         contract.act_proposal(2, Action::VoteApprove, None);
 
-        assert_eq!(contract.get_bounty(0).bounty.times, 0);
+        let panic_err = std::panic::catch_unwind(
+            //
+            || contract.get_bounty(0),
+        )
+        .unwrap_err()
+        .downcast::<String>()
+        .unwrap();
+        let expected = |err| {
+            format!("called `Result::unwrap()` on an `Err` value: HostError(GuestPanic {{ panic_msg: \"{}\" }})", err)
+        };
+        assert_eq!(panic_err.as_ref(), expected("ERR_NO_BOUNTY").as_str());
     }
 
     #[test]

@@ -2,13 +2,12 @@
 #![allow(clippy::identity_op)]
 
 use near_sdk::json_types::U128;
-use near_sdk::AccountId;
 use near_sdk_sim::{call, to_yocto, view};
 use near_sdk_sim::{ContractAccount, UserAccount};
 
 use crate::utils::*;
 use sputnikdao2::ContractContract;
-use sputnikdao2::{Bounty, Proposal, ProposalInput, ProposalKind, ProposalStatus};
+use sputnikdao2::{Bounty, BountyClaim, Proposal, ProposalInput, ProposalKind, ProposalStatus};
 
 mod utils;
 
@@ -26,10 +25,6 @@ const MEGA: u128 = KILO * KILO;
 /// = 10^24 = [`MEGA`]^4
 const YOTTA: u128 = MEGA * MEGA * MEGA * MEGA;
 
-fn user(id: u32) -> AccountId {
-    format!("user{}", id).parse().unwrap()
-}
-
 /// Creates an add-bounty proposal and approves it.
 ///
 /// Returns the bounty id.
@@ -39,7 +34,7 @@ fn new_bounty(
     amount: u128,
     times: u32,
     max_deadline: u64,
-) -> u64 {
+) -> Result<u64, near_sdk_sim::ExecutionResult> {
     let bounty = Bounty {
         description: "my bounty".to_string(),
         token: None,
@@ -56,8 +51,11 @@ fn new_bounty(
     };
 
     let res = call!(root, dao.add_proposal(input), deposit = to_yocto("1"));
-    res.assert_success();
-    let add_bounty_id = res.unwrap_json::<u64>();
+    use near_sdk_sim::transaction::ExecutionStatus;
+    let add_bounty_id = match res.status() {
+        ExecutionStatus::SuccessValue(_ok) => res.unwrap_json::<u64>(),
+        _other => return Err(res),
+    };
 
     // approves
     vote(vec![root], dao, add_bounty_id);
@@ -83,7 +81,21 @@ fn new_bounty(
         }
     );
 
-    bounty_id
+    Ok(bounty_id)
+}
+
+#[test]
+fn test_bounty_times_zero() {
+    let (root, dao) = setup_dao();
+    let bounty_res = new_bounty(
+        &root,
+        &dao,
+        1u128,
+        0,
+        1 * NANO_TO_SEC * SEC_TO_MINUTE * MINUTE_TO_HOUR,
+    )
+    .unwrap_err();
+    should_fail_with(bounty_res, 0, "ERR_BOUNTY_TIMES_ZERO")
 }
 
 #[test]
@@ -98,7 +110,8 @@ fn test_bounty_general() {
         1u128,
         1,
         1 * NANO_TO_SEC * SEC_TO_MINUTE * MINUTE_TO_HOUR,
-    );
+    )
+    .unwrap();
 
     // fail: user2 claims the wrong bounty
     let res = call!(
@@ -119,7 +132,15 @@ fn test_bounty_general() {
     );
     should_fail_with(res, 0, "ERR_BOUNTY_WRONG_BOND");
 
-    // fail: user2 claims with the wrong deadline
+    // fail: user2 claims with too much bond
+    let res = call!(
+        &user2,
+        dao.bounty_claim(bounty, U64::from(1 * NANO_TO_SEC * SEC_TO_MINUTE)),
+        deposit = 1 * YOTTA + 1
+    );
+    should_fail_with(res, 0, "ERR_BOUNTY_WRONG_BOND");
+
+    // fail: user2 claims with an insufficient deadline
     let res = call!(
         &user2,
         dao.bounty_claim(
@@ -138,6 +159,12 @@ fn test_bounty_general() {
         deposit = 1 * YOTTA
     )
     .assert_success();
+    // claims check
+    let bounty_claims = view!(dao.get_bounty_number_of_claims(0)).unwrap_json::<u32>();
+    assert_eq!(bounty_claims, 1);
+    let user_claims =
+        view!(dao.get_bounty_claims(user2.account_id())).unwrap_json::<Vec<BountyClaim>>();
+    assert_eq!(user_claims.len(), 1);
 
     // fail: user2 tries to claim again
     let res = call!(
@@ -159,6 +186,12 @@ fn test_bounty_general() {
 
     // ok: user2 gives up
     call!(&user2, dao.bounty_giveup(bounty)).assert_success();
+    // claims check
+    let bounty_claims = view!(dao.get_bounty_number_of_claims(0)).unwrap_json::<u32>();
+    assert_eq!(bounty_claims, 0);
+    let user_claims =
+        view!(dao.get_bounty_claims(user2.account_id())).unwrap_json::<Vec<BountyClaim>>();
+    assert_eq!(user_claims.len(), 0);
 
     // fail: user2 gives up again
     let res = call!(&user2, dao.bounty_giveup(bounty));
@@ -171,6 +204,12 @@ fn test_bounty_general() {
         deposit = 1 * YOTTA
     )
     .assert_success();
+    // claims check
+    let bounty_claims = view!(dao.get_bounty_number_of_claims(0)).unwrap_json::<u32>();
+    assert_eq!(bounty_claims, 1);
+    let user_claims =
+        view!(dao.get_bounty_claims(user2.account_id())).unwrap_json::<Vec<BountyClaim>>();
+    assert_eq!(user_claims.len(), 1);
 
     // fail: user2 tries to finish the wrong bounty
     let res = call!(
@@ -238,8 +277,15 @@ fn test_bounty_general() {
         user2.account().unwrap().amount
     );
 
+    // bounty is cleared
     let res = view!(dao.get_bounty(bounty));
     view_should_fail_with(res, "ERR_NO_BOUNTY");
+    // claims check
+    let bounty_claims = view!(dao.get_bounty_number_of_claims(0)).unwrap_json::<u32>();
+    assert_eq!(bounty_claims, 0);
+    let user_claims =
+        view!(dao.get_bounty_claims(user2.account_id())).unwrap_json::<Vec<BountyClaim>>();
+    assert_eq!(user_claims.len(), 0);
 }
 
 #[test]
@@ -254,7 +300,8 @@ fn test_bounty_general2() {
         // this bounty can be claimed twice
         2,
         1 * NANO_TO_SEC * SEC_TO_MINUTE * MINUTE_TO_HOUR,
-    );
+    )
+    .unwrap();
 
     // ok: user2 claims the bounty
     call!(
@@ -263,6 +310,12 @@ fn test_bounty_general2() {
         deposit = 1 * YOTTA
     )
     .assert_success();
+    // claims check
+    let bounty_claims = view!(dao.get_bounty_number_of_claims(0)).unwrap_json::<u32>();
+    assert_eq!(bounty_claims, 1);
+    let user_claims =
+        view!(dao.get_bounty_claims(user2.account_id())).unwrap_json::<Vec<BountyClaim>>();
+    assert_eq!(user_claims.len(), 1);
 
     // ok: user2 claims the bounty for the second time
     call!(
@@ -271,6 +324,12 @@ fn test_bounty_general2() {
         deposit = 1 * YOTTA
     )
     .assert_success();
+    // claims check
+    let bounty_claims = view!(dao.get_bounty_number_of_claims(0)).unwrap_json::<u32>();
+    assert_eq!(bounty_claims, 2);
+    let user_claims =
+        view!(dao.get_bounty_claims(user2.account_id())).unwrap_json::<Vec<BountyClaim>>();
+    assert_eq!(user_claims.len(), 2);
 
     // fail: user2 tries to claim for the third time
     let res = call!(
@@ -320,6 +379,12 @@ fn test_bounty_general2() {
            + 1,
         user2.account().unwrap().amount
     );
+    // claims check
+    let bounty_claims = view!(dao.get_bounty_number_of_claims(0)).unwrap_json::<u32>();
+    assert_eq!(bounty_claims, 1);
+    let user_claims =
+        view!(dao.get_bounty_claims(user2.account_id())).unwrap_json::<Vec<BountyClaim>>();
+    assert_eq!(user_claims.len(), 1);
 
     // approve and withdraw
     assert!(view!(dao.get_bounty(bounty)).is_ok());
@@ -335,14 +400,15 @@ fn test_bounty_general2() {
             + 1,
         user2.account().unwrap().amount
     );
+    // claims check
+    let bounty_claims = view!(dao.get_bounty_number_of_claims(0)).unwrap_json::<u32>();
+    assert_eq!(bounty_claims, 0);
+    let user_claims =
+        view!(dao.get_bounty_claims(user2.account_id())).unwrap_json::<Vec<BountyClaim>>();
+    assert_eq!(user_claims.len(), 0);
 
     let res = view!(dao.get_bounty(bounty));
     view_should_fail_with(res, "ERR_NO_BOUNTY");
-
-    // TODO: check that the claims were removed properly
-    // let res = view!(dao.get_bounty_claims(user2.account_id()));
-    // let claims = res.unwrap_json::<Vec<sputnikdao2::BountyClaim>>();
-    // panic!("{:#?}", &claims);
 }
 
 // ---

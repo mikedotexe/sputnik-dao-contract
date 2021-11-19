@@ -15,10 +15,6 @@ use sputnikdao2::{
 
 mod utils;
 
-fn user(id: u32) -> AccountId {
-    format!("user{}", id).parse().unwrap()
-}
-
 #[test]
 fn test_multi_council() {
     let (root, dao) = setup_dao();

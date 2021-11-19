@@ -403,6 +403,13 @@ impl Contract {
                 self.staking_id.is_none(),
                 "ERR_STAKING_CONTRACT_CANT_CHANGE"
             ),
+            ProposalKind::AddBounty { bounty } => 
+            {
+                if bounty.times == 0 {
+                    env::panic_str("ERR_BOUNTY_TIMES_ZERO");
+                }
+            }
+            ,
             // TODO: add more verifications.
             _ => {}
         };
